@@ -1,5 +1,6 @@
 #!/usr/bin/python
 import scipy.io.wavfile as wavfile
+import csv
 from numpy.fft import fft
 from matplotlib.pyplot import *
 from numpy import *
@@ -24,7 +25,6 @@ class SoundFile:
 		while pow(2,power) < self.length:
 			power += 1
 		self.data = append(self.data, zeros(pow(2,power) - self.length))
-		print len(self.data)
 	
 	def setdata(self, data):
 		self.data = data
@@ -51,11 +51,11 @@ class SignalFilter:
 		#2b - lo grafico
 		savePlot("transformed.png",trans_real)
 		#3 - busco la frecuencia
-		band = 1000
+		band = 2000
 		frec = argmax(trans_real)
-		filter_array = append(zeros(frec - (band / 2)), ones(band))
+		min = frec - band / 2 if frec > band / 2 else 0
+		filter_array = append(zeros(min), ones(band))
 		filter_array = append(filter_array, zeros(len(trans_real) - len(filter_array)))
-		print frec
 		filtered_array = multiply(trans, filter_array)
 		savePlot("filtered_trans.png",abs(filtered_array))
 		#4 - antitransformo
@@ -69,7 +69,6 @@ class SpectreAnalyzer:
 		spectrogram = specgram(signal)
 		savefig("spectrogram.png")
 		cla()
-		print len(spectrogram[0])
 		return spectrogram
 
 	def sumarizecolumns(self, mat):
@@ -98,11 +97,171 @@ class SpectreAnalyzer:
 		presence = self.findpresence(vec_sum)
 		return presence
 
-the_file = SoundFile("az.wav")
+class ShortLong:
+	def __init__(self, shorts, longs):
+		self.shortmean = mean(shorts)
+		self.shortstd = std(shorts)
+		self.longmean = mean(longs)
+		self.longstd = std(longs)
+	
+	def tostring(self):
+		return "short: (" + repr(self.shortmean) + ", " + repr(self.shortstd) + ")\n\
+long: (" + repr(self.longmean) + ", " + repr(self.longstd) + ")"
+
+class PulsesAnalyzer:
+	
+	def compress(self, pulses):
+		vec = []
+		i = 0
+		
+		if pulses[0] == 1:
+			vec += [0]
+			i = 1
+		
+		last = pulses[0]
+		
+		while i < len(pulses):
+			c = 0
+			last = pulses[i]
+			while i < len(pulses) and pulses[i] == last:
+				i += 1
+				c += 1
+			vec += [c]
+			i += 1
+		
+		vec = vec[1:-1]
+		return vec
+
+	def split(self, vec):
+		onesl = zeros(len(vec)//2)
+		zerosl = zeros(len(vec)//2)
+		for i in range(len(vec)//2):
+			onesl[i] = vec[2*i]
+			zerosl[i] = vec[2*i+1]
+		return (onesl, zerosl)
+
+	def findshortlongdup(self, vec):
+		sor = sort(vec)
+		last = sor[0]
+		for i in range(len(sor))[1:]:
+			if sor[i] > 2*last:
+				shorts = sor[:i-1]
+				longs = sor[i:]
+				return (shorts, longs)
+		return (vec, [])
+
+	def createshortlong(self, shorts, longs):
+		return ShortLong(shorts, longs)
+
+	def findshortlong(self, vec):
+		dup = self.findshortlongdup(vec)
+		return self.createshortlong(dup[0], dup[1])
+
+class SymbolDecoder:
+	def __init__(self, onessl, zerossl, zeroextra=None):
+		self.onessl = onessl
+		self.zerossl = zerossl
+		self.zeroextra = zeroextra
+
+	def get(self, sl, n, ifshort, iflong, ifnone="?"):
+		d = 4
+		if (n > sl.shortmean - d * sl.shortstd) and (n < sl.shortmean + d * sl.shortstd):
+			return ifshort
+		if (n > sl.longmean - d * sl.longstd) and (n < sl.longmean + d * sl.longstd):
+			return iflong
+		return ifnone
+	
+	def getonesymbol(self, n):
+		return self.get(self.onessl, n, ".", "-")
+	
+	def getzerosymbol(self, n):
+		sym = self.get(self.zerossl, n, "", " ")
+		if sym == "":
+			return sym
+		return self.get(self.zeroextra, n, " ", " | ")
+
+class PulsesTranslator:
+	def tostring(self, pulses):
+		pa = PulsesAnalyzer()
+		comp_vec = pa.compress(pulses)
+		comp_tup = pa.split(comp_vec)
+		
+		onessl = pa.findshortlong(comp_tup[0])
+		# zeros are subdivided
+		dup = pa.findshortlongdup(comp_tup[1])
+		zerossl = pa.createshortlong(dup[0], dup[1])
+		dup2 = pa.findshortlongdup(dup[1])
+		zeroextra = pa.createshortlong(dup2[0], dup2[1])
+		
+		symdec = SymbolDecoder(onessl, zerossl, zeroextra)
+		
+		s = ""
+		for i in range(len(comp_vec)//2):
+			s += symdec.getonesymbol(comp_vec[2*i])
+			s += symdec.getzerosymbol(comp_vec[2*i+1])
+		return s
+
+class Codes:
+	def __init__(self, path):
+		data = csv.DictReader(open(path), delimiter=',', fieldnames=["char", "code"])
+		self.dic = {}
+		for entry in data:
+			self.dic[entry["code"]] = entry["char"]
+	
+	def tochar(self, code):
+		if self.dic.has_key(code):
+			return self.dic[code]
+		return "?"
+
+class StringTranslator:
+	def __init__(self):
+		self.codes = Codes("codes.csv")
+
+	def totext(self, s):
+		text = ""
+		for code in s.split():
+			if code == "|":
+				char = " "
+			else:
+				char = self.codes.tochar(code)
+			text += char
+		return text
+
+if len(sys.argv) < 2:
+	print "Usage: " + sys.argv[0] + " soundfile.wav"
+	sys.exit(1)
+
+the_file = SoundFile(sys.argv[1])
+#the_file = SoundFile("wikipedia.wav")
 the_filter = SignalFilter()
 the_filter.filter(the_file)
 the_file.saveas("filtered.wav")
 
 analyzer = SpectreAnalyzer()
-analyzer.findpulses(the_file)
+pulses = analyzer.findpulses(the_file)
+
+pul_translator = PulsesTranslator()
+code_string = pul_translator.tostring(pulses)
+
+str_translator = StringTranslator()
+s = str_translator.totext(code_string)
+
+print code_string
+print s
+
+#####
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
