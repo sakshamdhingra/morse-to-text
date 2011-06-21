@@ -5,10 +5,35 @@ from numpy.fft import fft
 from matplotlib.pyplot import *
 from numpy import *
 
-def savePlot(name, data):
-	plot(data)
-	savefig(name)
-	cla()
+class Plotter:
+	
+	def __init__(self, format="pdf"):
+		self.format=format
+
+	def saveplot(self, name, data, length=-1, height=-1, dpi=None):
+		plot(data)
+		if length != -1:
+			axis(xmax=length)
+		if height != -1:
+			axis(ymax=height)
+		savefig(name + "." + self.format, format=self.format, dpi=dpi)
+		cla()
+
+	def specgram(self, name, signal):
+		spectrogram = specgram(signal)
+		savefig(name + "." + self.format, format=self.format)
+		cla()
+		return spectrogram
+
+class DummyPlotter:
+
+	def saveplot(self, name, data, length=-1, height=-1, dpi=None):
+		return None
+
+	def specgram(self, name, signal):
+		spectrogram = specgram(signal)
+		cla()
+		return spectrogram
 
 
 class SoundFile:
@@ -38,8 +63,8 @@ class SoundFile:
 	def saveas(self, path):
 		wavfile.write(path, self.rate, self.data)
 
-	def savePlot(self, fileName):
-		savePlot(fileName,data)
+	def saveplot(self, fileName):
+		plotter.saveplot(fileName,self.data,length=self.length)
 
 
 class SignalFilter:
@@ -49,32 +74,38 @@ class SignalFilter:
 		trans = fft.rfft(soundfile.getdata())
 		trans_real = abs(trans)
 		#2b - lo grafico
-		savePlot("transformed.png",trans_real)
+		plotter.saveplot("transformed",trans_real)
 		#3 - busco la frecuencia
 		band = 2000
-		frec = argmax(trans_real)
-		min = frec - band / 2 if frec > band / 2 else 0
+		# ignore the first 200Hz
+		hzignored = 200
+		frec = hzignored + argmax(trans_real[hzignored:])
+		#print max(trans_real)
+		#print trans_real[frec]
+		#print frec
+		min = (frec - band / 2) if (frec > band / 2) else 0
 		filter_array = append(zeros(min), ones(band))
 		filter_array = append(filter_array, zeros(len(trans_real) - len(filter_array)))
 		filtered_array = multiply(trans, filter_array)
-		savePlot("filtered_trans.png",abs(filtered_array))
+		plotter.saveplot("filtered_trans",abs(filtered_array))
 		#4 - antitransformo
 		filtered_signal = array(fft.irfft(filtered_array)[:soundfile.getlength()], dtype="int16")
-		savePlot("filtered_signal.png",filtered_signal)
+		plotter.saveplot("filtered_signal",filtered_signal)
 		soundfile.setdata(filtered_signal)
 
 class SpectreAnalyzer:
 
 	def spectrogram(self, signal):
-		spectrogram = specgram(signal)
-		savefig("spectrogram.png")
-		cla()
+		#spectrogram = specgram(signal)
+		#savefig("spectrogram", format="pdf")
+		#cla()
+		spectrogram = plotter.specgram("spectrogram", signal)
 		return spectrogram
 
 	def sumarizecolumns(self, mat):
 		vec_ones = ones(len(mat))
 		vec_sum = (matrix(vec_ones) * matrix(mat)).transpose()
-		savePlot("frecuency_volume.png",vec_sum)
+		plotter.saveplot("frecuency_volume",vec_sum)
 		return vec_sum
 
 	def findpresence(self, vec_sum):
@@ -83,10 +114,7 @@ class SpectreAnalyzer:
 		for i in range(len(presence)):
 			if vec_sum[i] > threshold:
 				presence[i] = 1
-		plot(presence)
-		axis(ymin=0,ymax=10)
-		savefig("presence.png", dpi=300)
-		cla()
+		plotter.saveplot("presence", presence, dpi=300, height=5)
 		return presence
 
 	def findpulses(self, soundfile):
@@ -133,11 +161,12 @@ class PulsesAnalyzer:
 		return vec
 
 	def split(self, vec):
-		onesl = zeros(len(vec)//2)
+		onesl = zeros(1+len(vec)//2)
 		zerosl = zeros(len(vec)//2)
 		for i in range(len(vec)//2):
 			onesl[i] = vec[2*i]
 			zerosl[i] = vec[2*i+1]
+		onesl[-1] = vec[-1]
 		return (onesl, zerosl)
 
 	def findshortlongdup(self, vec):
@@ -178,7 +207,7 @@ class SymbolDecoder:
 		sym = self.get(self.zerossl, n, "", " ")
 		if sym == "":
 			return sym
-		return self.get(self.zeroextra, n, " ", " | ")
+		return self.get(self.zeroextra, n, " ", " | ", ifnone=" ")
 
 class PulsesTranslator:
 	def tostring(self, pulses):
@@ -199,6 +228,7 @@ class PulsesTranslator:
 		for i in range(len(comp_vec)//2):
 			s += symdec.getonesymbol(comp_vec[2*i])
 			s += symdec.getzerosymbol(comp_vec[2*i+1])
+		s += symdec.getonesymbol(comp_vec[-1])
 		return s
 
 class Codes:
@@ -228,14 +258,23 @@ class StringTranslator:
 		return text
 
 if len(sys.argv) < 2:
-	print "Usage: " + sys.argv[0] + " soundfile.wav"
+	print "Usage: " + sys.argv[0] + " soundfile.wav [--report[=pdf|=png]]"
 	sys.exit(1)
+
+plotter = DummyPlotter()
+if len(sys.argv) > 2:
+	if sys.argv[2] == "--report" or sys.argv[2] == "--report=pdf":
+		plotter = Plotter("pdf")
+	if sys.argv[2] == "--report=png":
+		plotter = Plotter("png")
 
 the_file = SoundFile(sys.argv[1])
 #the_file = SoundFile("wikipedia.wav")
+the_file.saveplot("original")
+
 the_filter = SignalFilter()
 the_filter.filter(the_file)
-the_file.saveas("filtered.wav")
+#the_file.saveas("filtered.wav")
 
 analyzer = SpectreAnalyzer()
 pulses = analyzer.findpulses(the_file)
